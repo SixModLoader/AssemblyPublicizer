@@ -1,281 +1,157 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Mono.Cecil;
-using Mono.Options;
-
-/// <summary>
-/// AssemblyPublicizer - A tool to create a copy of an assembly in 
-/// which all members are public (types, methods, fields, getters
-/// and setters of properties).  
-/// 
-/// Copyright(c) 2018 CabbageCrow
-/// This library is free software; you can redistribute it and/or
-/// modify it under the terms of the GNU Lesser General Public
-/// License as published by the Free Software Foundation; either
-/// version 2.1 of the License, or(at your option) any later version.
-/// 
-/// Overview:
-/// https://tldrlegal.com/license/gnu-lesser-general-public-license-v2.1-(lgpl-2.1)
-/// 
-/// This library is distributed in the hope that it will be useful,
-/// but WITHOUT ANY WARRANTY; without even the implied warranty of
-///	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the GNU
-/// Lesser General Public License for more details.
-/// 
-/// You should have received a copy of the GNU Lesser General Public
-/// License along with this library; if not, write to the Free Software
-/// Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
-/// USA
-/// </summary>
+using CommandLine;
+using dnlib.DotNet;
 
 namespace CabbageCrow.AssemblyPublicizer
 {
-	/// <summary>
-	/// Creates a copy of an assembly in which all members are public (types, methods, fields, getters and setters of properties).
-	/// If you use the modified assembly as your reference and compile your dll with the option "Allow unsafe code" enabled, 
-	/// you can access all private elements even when using the original assembly.
-	/// Without "Allow unsafe code" you get an access violation exception during runtime when accessing private members except for types.  
-	/// How to enable it: https://docs.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-options/unsafe-compiler-option
-	/// arg 0 / -i|--input:		Path to the assembly (absolute or relative)
-	/// arg 1 / -o|--output:	[Optional] Output path/filename
-	///							Can be just a (relative) path like "subdir1\subdir2"
-	///							Can be just a filename like "CustomFileName.dll"
-	///							Can be a filename with path like "C:\subdir1\subdir2\CustomFileName.dll"
-	/// </summary>
-	class AssemblyPublicizer
-	{
-		static bool automaticExit, help;
+    public class Options
+    {
+        [Value(0, MetaName = "input", Required = true, HelpText = "Path (relative or absolute) to the input assembly")]
+        public string Input { get; set; }
 
-		static void Main(string[] args)
-		{
-			var suffix = "_publicized";
-			var defaultOutputDir = "publicized_assemblies";
+        [Option('o', "output", Required = false, HelpText = "Path/dir/filename for the output assembly")]
+        public string Output { get; set; }
+    }
 
-			var input = "";
-			string output = "";
+    public class AssemblyPublicizer
+    {
+        public static void Main(string[] args)
+        {
+            Parser.Default.ParseArguments<Options>(args)
+                .WithParsed(o =>
+                {
+                    const string suffix = "_publicized";
+                    const string defaultOutputDir = "publicized_assemblies";
 
-			var options = new OptionSet
-			{
-				{ "i|input=", "Path (relative or absolute) to the input assembly", i => input = i }, 
-				{ "o|output=", "Path/dir/filename for the output assembly", o => output = o }, 
-				{ "e|exit", "Application should automatically exit", e => automaticExit = e != null}, 
-				{ "h|help", "Show this message", h => help = h != null}
-			};
+                    o.Output ??= defaultOutputDir + Path.DirectorySeparatorChar;
 
+                    if (string.IsNullOrEmpty(Path.GetFileName(o.Output)))
+                    {
+                        o.Output = Path.Combine(o.Output!, Path.GetFileNameWithoutExtension(o.Input) + suffix + Path.GetExtension(o.Input));
+                    }
 
-			Console.WriteLine();
+                    if (!File.Exists(o.Input))
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine("ERROR! File doesn't exist or you don't have sufficient permissions.");
+                        Environment.Exit(30);
+                    }
 
-			List<string> extra;
-			try
-			{
-				// parse the command line
-				extra = options.Parse(args);
+                    ModuleDefMD module = null;
 
-				if (help)
-					ShowHelp(options);
+                    try
+                    {
+                        module = ModuleDefMD.Load(o.Input, ModuleDef.CreateModuleContext());
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine("ERROR! Cannot read the assembly. Please check your permissions.");
+                        Console.WriteLine(e);
+                        Environment.Exit(40);
+                    }
 
-				if (input == "" && extra.Count() >= 1)
-					input = extra[0];
+                    var runtimeVisibilityAttribute = new TypeDefUser("RuntimeVisibilityAttribute", module.Import(typeof(Attribute)))
+                    {
+                        Attributes = TypeAttributes.Class & TypeAttributes.Public
+                    };
 
-				if (input == "")
-					throw new OptionException();
+                    module.Types.Add(runtimeVisibilityAttribute);
 
-				if (output == "" && extra.Count() >= 2)
-					output = extra[1];
-			}
-			catch (OptionException)
-			{
-				// output some error message
-				Console.WriteLine("ERROR! Incorrect arguments. You need to provide the path to the assembly to publicize.");
-				Console.WriteLine("On Windows you can even drag and drop the assembly on the .exe.");
-				Console.WriteLine("Try `--help' for more information.");
-				Exit(10);
-			}
+                    runtimeVisibilityAttribute.Methods.Add(new MethodDefUser(
+                            ".ctor",
+                            MethodSig.CreateInstance(module.CorLibTypes.Void, module.CorLibTypes.String),
+                            MethodImplAttributes.Managed & MethodImplAttributes.IL,
+                            MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName)
+                        {
+                            ParamDefs = {new ParamDefUser("visibility")}
+                        }
+                    );
 
+                    var allTypes = module.GetTypes().ToList();
 
-			var inputFile = input;
-			AssemblyDefinition assembly = null;
-			string outputPath = "", outputName = "";
+                    var types = 0;
+                    var methods = 0;
+                    var fields = 0;
 
+                    foreach (var type in allTypes)
+                    {
+                        foreach (var method in type.Methods)
+                        {
+                            if (method.IsPublic) continue;
 
-			if (output != "")
-			{
-				try
-				{
-					outputPath = Path.GetDirectoryName(output);
-					outputName = Path.GetFileName(output);
-				}
-				catch(Exception)
-				{
-					Console.WriteLine("ERROR! Invalid output argument.");
-					Exit(20);
-				}
-			}
+                            methods++;
+                            method.CustomAttributes.Add(
+                                new CustomAttribute(runtimeVisibilityAttribute.FindConstructors().Single(),
+                                    new[]
+                                    {
+                                        new CAArgument(module.CorLibTypes.String, method.Access.ToString())
+                                    })
+                            );
+                            method.Access = MethodAttributes.Public;
+                        }
 
+                        foreach (var field in type.Fields)
+                        {
+                            if (field.IsPublic) continue;
 
-			if (!File.Exists(inputFile))
-			{
-				Console.WriteLine();
-				Console.WriteLine("ERROR! File doesn't exist or you don't have sufficient permissions.");
-				Exit(30);
-			}
+                            fields++;
+                            field.CustomAttributes.Add(
+                                new CustomAttribute(runtimeVisibilityAttribute.FindConstructors().Single(),
+                                    new[]
+                                    {
+                                        new CAArgument(module.CorLibTypes.String, field.Access.ToString())
+                                    })
+                            );
+                            field.Access = FieldAttributes.Public;
+                        }
 
-			try
-			{
-				assembly = AssemblyDefinition.ReadAssembly(inputFile);
-			}
-			catch (Exception)
-			{
-				Console.WriteLine();
-				Console.WriteLine("ERROR! Cannot read the assembly. Please check your permissions.");
-				Exit(40);
-			}
+                        if (type.IsNested ? type.IsNested : type.IsPublic) continue;
 
+                        types++;
+                        type.CustomAttributes.Add(
+                            new CustomAttribute(runtimeVisibilityAttribute.FindConstructors().Single(),
+                                new[]
+                                {
+                                    new CAArgument(module.CorLibTypes.String, type.Visibility.ToString())
+                                })
+                        );
+                        type.Visibility = type.IsNested ? TypeAttributes.NestedPublic : TypeAttributes.Public;
+                    }
 
-			var allTypes = GetAllTypes(assembly.MainModule);
-			var allMethods = allTypes.SelectMany(t => t.Methods);
-			var allFields = allTypes.SelectMany(t => t.Fields);
+                    const string reportString = "Changed {0} {1} to public.";
+                    Console.WriteLine(reportString, types, "types");
+                    Console.WriteLine(reportString, methods, "methods (including getters and setters)");
+                    Console.WriteLine(reportString, fields, "fields");
 
-			int count;
-			string reportString = "Changed {0} {1} to public.";
+                    Console.WriteLine();
 
-			#region Make everything public
+                    Console.WriteLine("Saving a copy of the modified assembly ...");
 
-			count = 0;
-			foreach (var type in allTypes)
-			{
-				if (!type?.IsPublic ?? false && !type.IsNestedPublic)
-				{
-					count++;
-					if (type.IsNested)
-						type.IsNestedPublic = true;
-					else
-						type.IsPublic = true;
-				}
-			}
-			Console.WriteLine(reportString, count, "types");
+                    try
+                    {
+                        var directory = Path.GetDirectoryName(o.Output);
+                        if (!string.IsNullOrEmpty(directory))
+                        {
+                            Directory.CreateDirectory(directory);
+                        }
 
-			count = 0;
-			foreach (var method in allMethods)
-			{
-				if (!method?.IsPublic ?? false)
-				{
-					count++;
-					method.IsPublic = true;
-				}
-			}
-			Console.WriteLine(reportString, count, "methods (including getters and setters)");
+                        module.Write(o.Output);
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine("ERROR! Cannot create/overwrite the new assembly. ");
+                        Console.WriteLine("Please check the path and its permissions " +
+                                          "and in case of overwriting an existing file ensure that it isn't currently used.");
+                        Console.WriteLine(e);
+                        Environment.Exit(50);
+                    }
 
-			count = 0;
-			foreach (var field in allFields)
-			{
-				if (!field?.IsPublic ?? false)
-				{
-					count++;
-					field.IsPublic = true;
-				}
-			}
-			Console.WriteLine(reportString, count, "fields");
-
-			#endregion
-
-
-			Console.WriteLine();
-
-			if (outputName == "")
-			{
-				outputName = String.Format("{0}{1}{2}",
-					Path.GetFileNameWithoutExtension(inputFile), suffix, Path.GetExtension(inputFile));
-				Console.WriteLine(@"Info: Use default output name: ""{0}""", outputName);
-			}
-
-			if(outputPath == "")
-			{
-				outputPath = defaultOutputDir;
-				Console.WriteLine(@"Info: Use default output dir: ""{0}""", outputPath);
-			}
-
-			Console.WriteLine("Saving a copy of the modified assembly ...");
-
-			var outputFile = Path.Combine(outputPath, outputName);
-
-			try
-			{
-				if (outputPath != "" && !Directory.Exists(outputPath))
-					Directory.CreateDirectory(outputPath);
-				assembly.Write(outputFile);
-			}
-			catch (Exception)
-			{
-				Console.WriteLine();
-				Console.WriteLine("ERROR! Cannot create/overwrite the new assembly. ");
-				Console.WriteLine("Please check the path and its permissions " +
-					"and in case of overwriting an existing file ensure that it isn't currently used.");
-				Exit(50);
-			}
-
-			Console.WriteLine("Completed.");
-			Console.WriteLine();
-			Console.WriteLine("Use the publicized library as your reference and compile your dll with the ");
-			Console.WriteLine(@"option ""Allow unsafe code"" enabled.");
-			Console.WriteLine(@"Without it you get an access violation exception during runtime when accessing");
-			Console.WriteLine("private members except for types.");
-			Exit(0);
-		}
-
-		public static void Exit(int exitCode = 0)
-		{
-			if (!automaticExit)
-			{
-				Console.WriteLine();
-				Console.WriteLine("Press any key to exit ...");
-				Console.ReadKey();
-			}
-			Environment.Exit(exitCode);
-		}
-
-		private static void ShowHelp(OptionSet p)
-		{
-			Console.WriteLine("Usage: AssemblyPublicizer.exe [Options]+");
-			Console.WriteLine("Creates a copy of an assembly in which all members are public.");
-			Console.WriteLine("An input path must be provided, the other options are optional.");
-			Console.WriteLine("You can use it without the option identifiers;");
-			Console.WriteLine("If so, the first argument is for input and the optional second one for output.");
-			Console.WriteLine();
-			Console.WriteLine("Options:");
-			p.WriteOptionDescriptions(Console.Out);
-			Exit(0);
-		}
-
-		/// <summary>
-		/// Method which returns all Types of the given module, including nested ones (recursively)
-		/// </summary>
-		/// <param name="moduleDefinition"></param>
-		/// <returns></returns>
-		public static IEnumerable<TypeDefinition> GetAllTypes(ModuleDefinition moduleDefinition)
-		{
-			return _GetAllNestedTypes(moduleDefinition.Types);//.Reverse();
-		}
-
-		/// <summary>
-		/// Recursive method to get all nested types. Use <see cref="GetAllTypes(ModuleDefinition)"/>
-		/// </summary>
-		/// <param name="typeDefinitions"></param>
-		/// <returns></returns>
-		private static IEnumerable<TypeDefinition> _GetAllNestedTypes(IEnumerable<TypeDefinition> typeDefinitions)
-		{
-			//return typeDefinitions.SelectMany(t => t.NestedTypes);
-
-			if (typeDefinitions?.Count() == 0)
-				return new List<TypeDefinition>();
-
-			var result = typeDefinitions.Concat(_GetAllNestedTypes(typeDefinitions.SelectMany(t => t.NestedTypes)));
-
-			return result;			
-		}
-
-
-	}
+                    Console.WriteLine("Completed.");
+                });
+        }
+    }
 }
