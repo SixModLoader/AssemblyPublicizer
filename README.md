@@ -16,11 +16,6 @@ creating an instance of an private nested class to use as an parameter for a pri
 ## Usage
 You can drop your target dll onto the .exe (on Windows) or use the command line.  
 The **first argument** is the path to the **target assembly** (absolute or relative).  
-The **second argument is optional** and contains the **output path and/or filename**.  
-* It can be just a (relative) path like `subdir1\subdir2`  
-* It can be just a filename like `CustomFileName.dll`  
-* It can be a filename with path like `C:\dir1\dir2\CustomFileName.dll`  
-  If omited, it creates the modified assembly with an `_publicized` suffix in the subdirectory `publicized_assemblies`.  
   
 ### How to "Allow unsafe code" in Visual Studio
 See the following link:  
@@ -35,15 +30,6 @@ Options:
 
 |  -short, --long            | Description                                       |
 | -------------------------- | ------------------------------------------------- |
-|  -i, --input=VALUE         | Path (relative or absolute) to the input assembly |
-|  -o, --output=VALUE        | Path/dir/filename for the output assembly         |
-|  -e, --exit                | Application should automatically exit             |
-|  -h, --help                | Show this message and exit                        |
-
-## Support me
-If you like my work, spread the word so more people can enjoy it.  
-You also can show your appreciation with a metaphorical coffee or cabbage:  
-<a href='https://ko-fi.com/Q5Q0BT8U' target='_blank'><img height='55' style='border:0px;height:55px;' 
-src='https://github.com/CabbageCrow/Miscellaneous/blob/master/img/Kofi_btn/kofi_btn_coffee.png?v=0' border='0' alt='Buy Me a metaphorical Coffee at ko-fi.com' /></a> 
-<a href='https://ko-fi.com/Q5Q0BT8U' target='_blank'><img height='55' style='border:0px;height:55px;' 
-src='https://github.com/CabbageCrow/Miscellaneous/blob/master/img/Kofi_btn/kofi_btn_cabbage.png?v=0' border='0' alt='Give the Crow a Cabbage at ko-fi.com' /></a>
+|  input (pos. 0)            | Path (relative or absolute) to the input assembly |
+|  -o, --output              | Path/dir/filename for the output assembly         |
+|  --help                    | Display help screen.                              |
