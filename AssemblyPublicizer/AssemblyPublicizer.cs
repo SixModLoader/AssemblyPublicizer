@@ -108,7 +108,7 @@ namespace CabbageCrow.AssemblyPublicizer
                             field.Access = FieldAttributes.Public;
                         }
 
-                        if (type.IsNested ? type.IsNested : type.IsPublic) continue;
+                        if (type.IsNested ? type.IsNestedPublic : type.IsPublic) continue;
 
                         types++;
                         type.CustomAttributes.Add(
